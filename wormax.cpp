@@ -2,6 +2,7 @@
 #include <deque>
 #include <cmath>
 #include <cstdlib>
+#include <iostream>
 
 const float ARENA_RADIUS = 2500.f;
 const sf::Vector2f ARENA_CENTER(ARENA_RADIUS, ARENA_RADIUS);
@@ -80,7 +81,7 @@ class BotWorm : public Worm {
 public:
     sf::Vector2f direction;
     float directionTimer = 0.f;
-    float directionInterval = 2.0f; // менять направление каждые 2 секунды
+    float directionInterval = 5.0f; // менять направление каждые 2 секунды
 
     BotWorm(sf::Vector2f startPos) : Worm(startPos) {
         randomizeDirection();
@@ -98,13 +99,13 @@ public:
             randomizeDirection();
         }
 
-        sf::Vector2f newTarget = segments.front() + direction * 50.f;
+        sf::Vector2f newTarget = segments.front() + direction * 500.f;
 
         // Проверка границ
-        if (newTarget.x < 0 || newTarget.x > windowSize.x ||
-            newTarget.y < 0 || newTarget.y > windowSize.y) {
+        float dist = distance(newTarget, ARENA_CENTER);
+        if (dist > ARENA_RADIUS) {
             randomizeDirection();
-            return; // не двигаем за границу
+            return;
         }
 
         moveTowards(newTarget, deltaTime);;
@@ -158,9 +159,8 @@ int main() {
         player.grow();
 
     sf::View view(sf::FloatRect(0, 0, window.getSize().x, window.getSize().y));
-    view.setSize(800.f / 2.f, 600.f / 2.f); // приближаем в 2 раза
-
-    view.setCenter(player.getHead());
+    view.setSize(800.f / 2.f, 600.f / 2.f); // Приближаем в 2 раза
+    view.setCenter(ARENA_CENTER); // Начальный центр — центр арены
     window.setView(view);
 
     const int foodCount = 15;
@@ -168,22 +168,26 @@ int main() {
     for (int i = 0; i < foodCount; ++i)
         foods.emplace_back(window.getSize());
 
-    std::vector<BotWorm> bots = {
-        BotWorm(sf::Vector2f(200, 150)),
-        BotWorm(sf::Vector2f(600, 450))
-    };
+    const int botCount = 10;
+    std::vector<BotWorm> bots;
+    for (int i = 0; i < botCount; ++i) {
+        float angle = static_cast<float>(rand()) / RAND_MAX * 2 * 3.14159f;
+        float radius = std::sqrt(static_cast<float>(rand()) / RAND_MAX) * ARENA_RADIUS;
+        sf::Vector2f pos = {
+            ARENA_CENTER.x + std::cos(angle) * radius,
+            ARENA_CENTER.y + std::sin(angle) * radius
+        };
+        bots.emplace_back(pos);
+    }
 
     sf::Clock clock;
+    sf::Vector2f smoothedPlayerPos = player.getHead(); // Для сглаживания позиции игрока
 
     while (window.isOpen()) {
         sf::Event event;
         while (window.pollEvent(event))
             if (event.type == sf::Event::Closed)
                 window.close();
-
-        //Установил вид в центр на игрока
-        view.setCenter(player.getHead());
-        window.setView(view);
 
         float deltaTime = clock.restart().asSeconds();
 
@@ -204,6 +208,27 @@ int main() {
                 food.respawn();
             }
         }
+
+        // Плавное слежение за игроком
+        sf::Vector2f playerPos = player.getHead();
+        sf::Vector2f viewCenter = view.getCenter();
+
+        // Интерполяция центра камеры в сторону игрока
+        float followSpeed = 5.0f; // чем выше — тем быстрее камера следует
+        sf::Vector2f toPlayer = playerPos - viewCenter;
+        viewCenter += toPlayer * followSpeed * deltaTime;
+
+        // Ограничение — не вылезать за границы арены
+        float maxDistance = ARENA_RADIUS - view.getSize().x / 2.f;
+        float distanceFromCenter = distance(viewCenter, ARENA_CENTER);
+
+        if (distanceFromCenter > maxDistance) {
+            viewCenter = ARENA_CENTER + normalize(viewCenter - ARENA_CENTER) * maxDistance;
+        }
+
+        view.setCenter(viewCenter);
+
+        window.setView(view);
 
         window.clear(sf::Color::Black);
 
@@ -228,7 +253,6 @@ int main() {
         player.render(window);
 
         window.display();
-
     }
 
     return 0;
