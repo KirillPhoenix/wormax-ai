@@ -11,10 +11,37 @@ float distance(sf::Vector2f a, sf::Vector2f b) {
     return std::hypot(a.x - b.x, a.y - b.y);
 }
 
-sf::Vector2f normalize(sf::Vector2f v) {
-    float len = std::hypot(v.x, v.y);
-    return len != 0 ? v / len : sf::Vector2f(0, 0);
+// Старая normalize
+// sf::Vector2f normalize(sf::Vector2f v) {
+//     float len = std::hypot(v.x, v.y);
+//     return len != 0 ? v / len : sf::Vector2f(0, 0);
+// }
+
+float length(sf::Vector2f v) {
+    return std::sqrt(v.x * v.x + v.y * v.y);
 }
+
+sf::Vector2f normalize(sf::Vector2f v) {
+    float len = length(v);
+    return len == 0 ? sf::Vector2f(0, 0) : v / len;
+}
+
+float dot(sf::Vector2f a, sf::Vector2f b) {
+    return a.x * b.x + a.y * b.y;
+}
+
+float cross(sf::Vector2f a, sf::Vector2f b) {
+    return a.x * b.y - a.y * b.x;
+}
+
+float angleBetween(sf::Vector2f a, sf::Vector2f b) {
+    a = normalize(a);
+    b = normalize(b);
+    float dotVal = std::clamp(dot(a, b), -1.f, 1.f);
+    return std::acos(dotVal);
+}
+
+
 
 class Worm {
 public:
@@ -26,6 +53,9 @@ public:
     float radius = 6.f;
     int growthLeft = 0;
 
+    sf::Vector2f direction = {1.f, 0.f}; // начальное направление — вправо
+    float maxTurnRate = 10.14f; // радиан/сек — можно настраивать
+
     Worm(sf::Vector2f startPos) {
         segments.push_back(startPos);
     }
@@ -34,36 +64,62 @@ public:
         currentSpeed = boosting ? fastSpeed : normalSpeed;
     }
 
-    void moveTowards(sf::Vector2f target, float deltaTime) {
+    void updateDirection(sf::Vector2f target, float deltaTime) {
         sf::Vector2f head = segments.front();
-        sf::Vector2f dir = normalize(target - head);
-        sf::Vector2f newHead = head + dir * currentSpeed * deltaTime;
+        sf::Vector2f toTarget = normalize(target - head);
+
+        float angle = angleBetween(direction, toTarget);
+        float maxAngle = maxTurnRate * deltaTime;
+
+        // если можем довернуть полностью, просто установить направление
+        if (angle <= maxAngle) {
+            direction = toTarget;
+            return;
+        }
+
+        // вычисляем угол поворота
+        float sign = cross(direction, toTarget) < 0 ? -1.f : 1.f;
+        float rotateAngle = sign * maxAngle;
+
+        float sinA = std::sin(rotateAngle);
+        float cosA = std::cos(rotateAngle);
+
+        sf::Vector2f newDir = {
+            direction.x * cosA - direction.y * sinA,
+            direction.x * sinA + direction.y * cosA
+        };
+
+        direction = normalize(newDir);
+    }
+
+
+    void moveForward(float deltaTime) {
+        sf::Vector2f head = segments.front();
+        sf::Vector2f newHead = head + direction * currentSpeed * deltaTime;
 
         float distFromCenter = distance(newHead, ARENA_CENTER);
         if (distFromCenter > ARENA_RADIUS) {
-            *this = Worm(ARENA_CENTER); // Респавн в центр
+            *this = Worm(ARENA_CENTER);
             return;
         }
 
         segments.push_front(newHead);
-
-        if (growthLeft > 0) {
-            growthLeft--;
-        } else {
+        if (growthLeft > 0)
+            --growthLeft;
+        else
             segments.pop_back();
-        }
     }
 
     void grow() {
         growthLeft += 10;
     }
 
-    void render(sf::RenderWindow& window) {
+    void render(sf::RenderWindow& window, sf::Color color) {
         for (auto& pos : segments) {
             sf::CircleShape circle(radius);
             circle.setOrigin(radius, radius);
             circle.setPosition(pos);
-            circle.setFillColor(sf::Color::Green);
+            circle.setFillColor(color);
             window.draw(circle);
         }
     }
@@ -79,7 +135,7 @@ public:
 
 class BotWorm : public Worm {
 public:
-    sf::Vector2f direction;
+    //sf::Vector2f direction;
     float directionTimer = 0.f;
     float directionInterval = 5.0f; // менять направление каждые 2 секунды
 
@@ -96,19 +152,20 @@ public:
         directionTimer += deltaTime;
         if (directionTimer >= directionInterval) {
             directionTimer = 0.f;
-            randomizeDirection();
+            randomizeDirection(); // меняет direction напрямую
         }
 
+        // Обновляем направление чуть-чуть в сторону точки (чтобы не было рывка)
         sf::Vector2f newTarget = segments.front() + direction * 500.f;
 
         // Проверка границ
         float dist = distance(newTarget, ARENA_CENTER);
         if (dist > ARENA_RADIUS) {
             randomizeDirection();
-            return;
         }
 
-        moveTowards(newTarget, deltaTime);;
+        // Бот всегда идёт вперёд (по направлению)
+        moveForward(deltaTime);
     }
 
 private:
@@ -195,7 +252,8 @@ int main() {
         player.setBoosting(boosting);
 
         sf::Vector2f mouseWorldPos = window.mapPixelToCoords(sf::Mouse::getPosition(window));
-        player.moveTowards(mouseWorldPos, deltaTime);
+        player.updateDirection(mouseWorldPos, deltaTime);
+        player.moveForward(deltaTime);
 
         // Обновление ботов
         for (auto& bot : bots)
@@ -247,10 +305,10 @@ int main() {
 
         // Боты
         for (auto& bot : bots)
-            bot.render(window);
+            bot.render(window, sf::Color::Red);
 
         // Игрок
-        player.render(window);
+        player.render(window, sf::Color::Green);
 
         window.display();
     }
