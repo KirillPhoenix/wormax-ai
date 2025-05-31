@@ -3,10 +3,16 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <unordered_set>
 
-const float ARENA_RADIUS = 2500.f;
-const int INITIAL_LENGTH = 30; // Начальная длина вынесена в константы, заместо вызова метода grow при создании червя 
-const sf::Vector2f ARENA_CENTER(ARENA_RADIUS, ARENA_RADIUS);
+namespace GameConfig {
+    constexpr float arenaRadius = 2500.f;
+    constexpr int initialLength = 30;
+    const sf::Vector2f arenaCenter{arenaRadius, arenaRadius};
+    constexpr float wormRadius = 6.f;
+    constexpr int foodCount = 15;
+    constexpr int botCount = 20;
+}
 
 float distance(sf::Vector2f a, sf::Vector2f b) {
     return std::hypot(a.x - b.x, a.y - b.y);
@@ -36,8 +42,6 @@ float angleBetween(sf::Vector2f a, sf::Vector2f b) {
     return std::acos(dotVal);
 }
 
-
-
 class Worm {
 public:
     std::deque<sf::Vector2f> segments;
@@ -45,14 +49,14 @@ public:
     float normalSpeed = 250.f;
     float fastSpeed = 500.f;
     float currentSpeed = normalSpeed;
-    float radius = 6.f;
-    int growthLeft = 0; // Отвечает за удлинение червя при поедании массы
+    float radius = GameConfig::wormRadius;
+    int growthLeft = 0;
 
-    sf::Vector2f direction = {1.f, 0.f}; // начальное направление — вправо
-    float maxTurnRate = 15.0f; // радиан/сек — можно настраивать
+    sf::Vector2f direction = {1.f, 0.f};
+    float maxTurnRate = 15.0f;
 
     Worm(sf::Vector2f startPos, int length) {
-        growthLeft += length; // Начальный рост
+        growthLeft += length;
         segments.push_back(startPos);
     }
 
@@ -67,13 +71,11 @@ public:
         float angle = angleBetween(direction, toTarget);
         float maxAngle = maxTurnRate * deltaTime;
 
-        // если можем довернуть полностью, просто установить направление
         if (angle <= maxAngle) {
             direction = toTarget;
             return;
         }
 
-        // вычисляем угол поворота
         float sign = cross(direction, toTarget) < 0 ? -1.f : 1.f;
         float rotateAngle = sign * maxAngle;
 
@@ -88,27 +90,32 @@ public:
         direction = normalize(newDir);
     }
 
-
     void moveForward(float deltaTime) {
         sf::Vector2f head = segments.front();
         sf::Vector2f newHead = head + direction * currentSpeed * deltaTime;
 
-        float distFromCenter = distance(newHead, ARENA_CENTER);
-        if (distFromCenter > ARENA_RADIUS) {
-            *this = Worm(ARENA_CENTER, INITIAL_LENGTH);
+        if (distance(newHead, GameConfig::arenaCenter) > GameConfig::arenaRadius) {
+            *this = Worm(GameConfig::arenaCenter, GameConfig::initialLength);
             return;
         }
 
         segments.push_front(newHead);
-        if (growthLeft > 0)
-            --growthLeft;
-        else
-            segments.pop_back();
+        if (growthLeft > 0) --growthLeft;
+        else segments.pop_back();
     }
 
-    void grow() {
-        growthLeft += 10;
+    bool checkCollisionWith(const Worm& other) const {
+        for (size_t i = 1; i < other.segments.size(); ++i)
+            if (distance(getHead(), other.segments[i]) < radius * 2)
+                return true;
+        return false;
     }
+
+    bool checkHeadOnCollision(const Worm& other) const {
+        return distance(getHead(), other.getHead()) < radius * 2;
+    }
+
+    void grow() { growthLeft += 10; }
 
     void render(sf::RenderWindow& window, sf::Color color) {
         for (auto& pos : segments) {
@@ -120,50 +127,84 @@ public:
         }
     }
 
-    sf::Vector2f getHead() const {
-        return segments.front();
-    }
-
-    float getRadius() const {
-        return radius;
-    }
+    sf::Vector2f getHead() const { return segments.front(); }
+    float getRadius() const { return radius; }
 };
 
 class BotWorm : public Worm {
 public:
-    //sf::Vector2f direction;
     float directionTimer = 0.f;
-    float directionInterval = 5.0f; // менять направление каждые 2 секунды
+    float directionInterval = 5.0f;
 
     BotWorm(sf::Vector2f startPos, int length) : Worm(startPos, length) {
         randomizeDirection();
     }
 
+    void avoidObstacles(const std::vector<BotWorm>& bots, const Worm& player) {
+        const float avoidDistance = 40.f;
+        const float turnStrength = 2.0f;
 
-    void update(float deltaTime, const sf::Vector2u& windowSize) {
+        sf::Vector2f avoidanceVector{0.f, 0.f};
+
+        // Избегаем игрока (все сегменты)
+        for (size_t i = 0; i < player.segments.size(); ++i) {
+            float d = distance(getHead(), player.segments[i]);
+            if (d < avoidDistance && d > 0.01f) {
+                float weight = (avoidDistance - d) / avoidDistance;
+                avoidanceVector += normalize(getHead() - player.segments[i]) * weight / d;
+            }
+        }
+
+        // Избегаем других ботов (все сегменты)
+        for (const auto& bot : bots) {
+            if (&bot == this) continue;
+            for (size_t i = 0; i < bot.segments.size(); ++i) {
+                float d = distance(getHead(), bot.segments[i]);
+                if (d < avoidDistance && d > 0.01f) {
+                    float weight = (avoidDistance - d) / avoidDistance;
+                    avoidanceVector += normalize(getHead() - bot.segments[i]) * weight / d;
+                }
+            }
+        }
+
+        if (length(avoidanceVector) > 0.01f) {
+            sf::Vector2f newDir = normalize(direction + avoidanceVector * turnStrength);
+            direction = newDir;
+        }
+    }
+
+    void update(float deltaTime, const sf::Vector2u& winSize, const std::vector<BotWorm>& bots, const Worm& player) {
         directionTimer += deltaTime;
         if (directionTimer >= directionInterval) {
             directionTimer = 0.f;
-            randomizeDirection(); // меняет direction напрямую
+            sf::Vector2f projected = getHead() + direction * 50.f;
+            bool nearObstacle = false;
+            for (const auto& bot : bots) {
+                if (&bot == this) continue;
+                if (distance(projected, bot.getHead()) < 40.f) {
+                    nearObstacle = true;
+                    break;
+                }
+            }
+            if (distance(projected, player.getHead()) < 40.f) nearObstacle = true;
+            if (!nearObstacle) randomizeDirection();
         }
 
-        // Обновляем направление чуть-чуть в сторону точки (чтобы не было рывка)
-        sf::Vector2f newTarget = segments.front() + direction * 500.f;
+        avoidObstacles(bots, player);
 
-        // Проверка границ
-        float dist = distance(newTarget, ARENA_CENTER);
-        if (dist > ARENA_RADIUS) {
+        sf::Vector2f projected = getHead() + direction * 500.f;
+        if (distance(projected, GameConfig::arenaCenter) > GameConfig::arenaRadius) {
             randomizeDirection();
         }
 
-        // Бот всегда идёт вперёд (по направлению)
         moveForward(deltaTime);
     }
+
 
 private:
     void randomizeDirection() {
         float angle = static_cast<float>(rand()) / RAND_MAX * 2 * 3.14159f;
-        direction = sf::Vector2f(std::cos(angle), std::sin(angle));
+        direction = {std::cos(angle), std::sin(angle)};
     }
 };
 
@@ -172,18 +213,13 @@ public:
     sf::Vector2f position;
     float size = 10.f;
 
-    Food(sf::Vector2u windowSize) {
-        respawn();
-    }
+    Food() { respawn(); }
 
     void respawn() {
         float angle = (rand() / (float)RAND_MAX) * 2 * 3.14159f;
-        float radius = std::sqrt(rand() / (float)RAND_MAX) * ARENA_RADIUS;
+        float radius = std::sqrt(rand() / (float)RAND_MAX) * GameConfig::arenaRadius;
 
-        position = {
-            ARENA_CENTER.x + std::cos(angle) * radius,
-            ARENA_CENTER.y + std::sin(angle) * radius
-        };
+        position = GameConfig::arenaCenter + sf::Vector2f(std::cos(angle), std::sin(angle)) * radius;
     }
 
     void render(sf::RenderWindow& window) {
@@ -199,33 +235,35 @@ public:
     }
 };
 
+// ⬇️ Новая функция: создаёт еду из червяка
+void spawnFoodFromWorm(const Worm& worm, std::vector<Food>& foods) {
+    for (const auto& segment : worm.segments) {
+        Food f;
+        f.position = segment;
+        f.size = 6.f + static_cast<float>(rand() % 5); // от 6 до 10 пикселей
+        foods.push_back(f);
+    }
+}
+
 int main() {
     sf::RenderWindow window(sf::VideoMode(800, 600), "Wormax Mini with Bots");
     window.setFramerateLimit(60);
 
-    Worm player(ARENA_CENTER, INITIAL_LENGTH);
+    Worm player(GameConfig::arenaCenter, GameConfig::initialLength);
 
-    sf::View view(sf::FloatRect(0, 0, window.getSize().x, window.getSize().y));
-    view.setSize(800.f / 2.f, 600.f / 2.f); // Приближаем в 2 раза
-    view.setCenter(ARENA_CENTER); // Начальный центр — центр арены
+    sf::View view({0, 0, 400, 300});
+    view.setCenter(GameConfig::arenaCenter);
     window.setView(view);
 
-    const int foodCount = 15;
-    std::vector<Food> foods;
-    for (int i = 0; i < foodCount; ++i)
-        foods.emplace_back(window.getSize());
+    std::vector<Food> foods(GameConfig::foodCount);
 
-    const int botCount = 10;
     std::vector<BotWorm> bots;
-    for (int i = 0; i < botCount; ++i) {
+    
+    for (int i = 0; i < GameConfig::botCount; ++i) {
         float angle = static_cast<float>(rand()) / RAND_MAX * 2 * 3.14159f;
-        float radius = std::sqrt(static_cast<float>(rand()) / RAND_MAX) * ARENA_RADIUS;
-        sf::Vector2f pos = {
-            ARENA_CENTER.x + std::cos(angle) * radius,
-            ARENA_CENTER.y + std::sin(angle) * radius
-        };
-        int length = 20; // Начальная длина для ботов, потом сделать рандомной
-        bots.emplace_back(pos, length);
+        float radius = std::sqrt(static_cast<float>(rand()) / RAND_MAX) * GameConfig::arenaRadius;
+        sf::Vector2f pos = GameConfig::arenaCenter + sf::Vector2f(std::cos(angle), std::sin(angle)) * radius;
+        bots.emplace_back(pos, 20);
     }
 
     sf::Clock clock;
@@ -233,23 +271,53 @@ int main() {
     while (window.isOpen()) {
         sf::Event event;
         while (window.pollEvent(event))
-            if (event.type == sf::Event::Closed)
-                window.close();
+            if (event.type == sf::Event::Closed) window.close();
 
         float deltaTime = clock.restart().asSeconds();
 
-        bool boosting = sf::Mouse::isButtonPressed(sf::Mouse::Left);
-        player.setBoosting(boosting);
-
-        sf::Vector2f mouseWorldPos = window.mapPixelToCoords(sf::Mouse::getPosition(window));
-        player.updateDirection(mouseWorldPos, deltaTime);
+        player.setBoosting(sf::Mouse::isButtonPressed(sf::Mouse::Left));
+        player.updateDirection(window.mapPixelToCoords(sf::Mouse::getPosition(window)), deltaTime);
         player.moveForward(deltaTime);
 
-        // Обновление ботов
-        for (auto& bot : bots)
-            bot.update(deltaTime, window.getSize());
+        std::vector<Worm*> allWorms = {&player};
+        std::unordered_set<Worm*> deadWorms;
+        for (auto& bot : bots) allWorms.push_back(&bot);
 
-        // Еда — проверка на поедание
+        for (size_t i = 0; i < allWorms.size(); ++i) {
+            for (size_t j = 0; j < allWorms.size(); ++j) {
+                if (i == j) continue;
+                Worm* a = allWorms[i];
+                Worm* b = allWorms[j];
+                if (a->checkCollisionWith(*b)) deadWorms.insert(a);
+                else if (a->checkHeadOnCollision(*b)) {
+                    int lenA = a->segments.size();
+                    int lenB = b->segments.size();
+                    if (lenA < lenB) deadWorms.insert(a);
+                    else if (lenB < lenA) deadWorms.insert(b);
+                    else { deadWorms.insert(a); deadWorms.insert(b); }
+                }
+            }
+        }
+
+        for (auto* worm : deadWorms) {
+            spawnFoodFromWorm(*worm, foods);
+
+            if (worm == &player) {
+                player = Worm(GameConfig::arenaCenter, GameConfig::initialLength);
+            } else {
+                for (auto& bot : bots) {
+                    if (worm == &bot) {
+                        float angle = static_cast<float>(rand()) / RAND_MAX * 2 * 3.14159f;
+                        float radius = std::sqrt(static_cast<float>(rand()) / RAND_MAX) * GameConfig::arenaRadius;
+                        bot = BotWorm(GameConfig::arenaCenter + sf::Vector2f(std::cos(angle), std::sin(angle)) * radius, 20);
+                        break;
+                    }
+                }
+            }
+        }
+
+        for (auto& bot : bots) bot.update(deltaTime, window.getSize(), bots, player);
+
         for (auto& food : foods) {
             if (food.isEatenBy(player)) {
                 player.grow();
@@ -258,29 +326,20 @@ int main() {
         }
 
         view.setCenter(player.getHead());
-
         window.setView(view);
 
         window.clear(sf::Color::Black);
 
-        // Отрисовка арены (фон)
-        sf::CircleShape arenaBorder(ARENA_RADIUS);
-        arenaBorder.setOrigin(ARENA_RADIUS, ARENA_RADIUS);
-        arenaBorder.setPosition(ARENA_CENTER);
+        sf::CircleShape arenaBorder(GameConfig::arenaRadius);
+        arenaBorder.setOrigin(GameConfig::arenaRadius, GameConfig::arenaRadius);
+        arenaBorder.setPosition(GameConfig::arenaCenter);
         arenaBorder.setFillColor(sf::Color(30, 30, 30));
         arenaBorder.setOutlineColor(sf::Color(100, 100, 100));
         arenaBorder.setOutlineThickness(10);
         window.draw(arenaBorder);
 
-        // Еда
-        for (auto& food : foods)
-            food.render(window);
-
-        // Боты
-        for (auto& bot : bots)
-            bot.render(window, sf::Color::Red);
-
-        // Игрок
+        for (auto& food : foods) food.render(window);
+        for (auto& bot : bots) bot.render(window, sf::Color::Red);
         player.render(window, sf::Color::Green);
 
         window.display();
