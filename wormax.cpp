@@ -5,17 +5,12 @@
 #include <iostream>
 
 const float ARENA_RADIUS = 2500.f;
+const int INITIAL_LENGTH = 30; // Начальная длина вынесена в константы, заместо вызова метода grow при создании червя 
 const sf::Vector2f ARENA_CENTER(ARENA_RADIUS, ARENA_RADIUS);
 
 float distance(sf::Vector2f a, sf::Vector2f b) {
     return std::hypot(a.x - b.x, a.y - b.y);
 }
-
-// Старая normalize
-// sf::Vector2f normalize(sf::Vector2f v) {
-//     float len = std::hypot(v.x, v.y);
-//     return len != 0 ? v / len : sf::Vector2f(0, 0);
-// }
 
 float length(sf::Vector2f v) {
     return std::sqrt(v.x * v.x + v.y * v.y);
@@ -51,12 +46,13 @@ public:
     float fastSpeed = 500.f;
     float currentSpeed = normalSpeed;
     float radius = 6.f;
-    int growthLeft = 0;
+    int growthLeft = 0; // Отвечает за удлинение червя при поедании массы
 
     sf::Vector2f direction = {1.f, 0.f}; // начальное направление — вправо
-    float maxTurnRate = 10.14f; // радиан/сек — можно настраивать
+    float maxTurnRate = 15.0f; // радиан/сек — можно настраивать
 
-    Worm(sf::Vector2f startPos) {
+    Worm(sf::Vector2f startPos, int length) {
+        growthLeft += length; // Начальный рост
         segments.push_back(startPos);
     }
 
@@ -99,7 +95,7 @@ public:
 
         float distFromCenter = distance(newHead, ARENA_CENTER);
         if (distFromCenter > ARENA_RADIUS) {
-            *this = Worm(ARENA_CENTER);
+            *this = Worm(ARENA_CENTER, INITIAL_LENGTH);
             return;
         }
 
@@ -139,12 +135,8 @@ public:
     float directionTimer = 0.f;
     float directionInterval = 5.0f; // менять направление каждые 2 секунды
 
-    BotWorm(sf::Vector2f startPos) : Worm(startPos) {
+    BotWorm(sf::Vector2f startPos, int length) : Worm(startPos, length) {
         randomizeDirection();
-
-        int length = rand() % 10 + 5; // от 5 до 14 сегментов
-        for (int i = 0; i < length; ++i)
-            grow();
     }
 
 
@@ -211,9 +203,7 @@ int main() {
     sf::RenderWindow window(sf::VideoMode(800, 600), "Wormax Mini with Bots");
     window.setFramerateLimit(60);
 
-    Worm player(ARENA_CENTER);
-    for (int i = 0; i < 10; ++i)
-        player.grow();
+    Worm player(ARENA_CENTER, INITIAL_LENGTH);
 
     sf::View view(sf::FloatRect(0, 0, window.getSize().x, window.getSize().y));
     view.setSize(800.f / 2.f, 600.f / 2.f); // Приближаем в 2 раза
@@ -234,11 +224,11 @@ int main() {
             ARENA_CENTER.x + std::cos(angle) * radius,
             ARENA_CENTER.y + std::sin(angle) * radius
         };
-        bots.emplace_back(pos);
+        int length = 20; // Начальная длина для ботов, потом сделать рандомной
+        bots.emplace_back(pos, length);
     }
 
     sf::Clock clock;
-    sf::Vector2f smoothedPlayerPos = player.getHead(); // Для сглаживания позиции игрока
 
     while (window.isOpen()) {
         sf::Event event;
@@ -267,24 +257,7 @@ int main() {
             }
         }
 
-        // Плавное слежение за игроком
-        sf::Vector2f playerPos = player.getHead();
-        sf::Vector2f viewCenter = view.getCenter();
-
-        // Интерполяция центра камеры в сторону игрока
-        float followSpeed = 5.0f; // чем выше — тем быстрее камера следует
-        sf::Vector2f toPlayer = playerPos - viewCenter;
-        viewCenter += toPlayer * followSpeed * deltaTime;
-
-        // Ограничение — не вылезать за границы арены
-        float maxDistance = ARENA_RADIUS - view.getSize().x / 2.f;
-        float distanceFromCenter = distance(viewCenter, ARENA_CENTER);
-
-        if (distanceFromCenter > maxDistance) {
-            viewCenter = ARENA_CENTER + normalize(viewCenter - ARENA_CENTER) * maxDistance;
-        }
-
-        view.setCenter(viewCenter);
+        view.setCenter(player.getHead());
 
         window.setView(view);
 
