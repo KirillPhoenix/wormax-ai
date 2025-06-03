@@ -51,6 +51,8 @@ public:
     float currentSpeed = normalSpeed;
     float radius = GameConfig::wormRadius;
     int growthLeft = 0;
+    float scaleRadius = 1.f;
+
 
     sf::Vector2f direction = {1.f, 0.f};
     float maxTurnRate = 15.0f;
@@ -106,7 +108,7 @@ public:
 
     bool checkCollisionWith(const Worm& other) const {
         for (size_t i = 1; i < other.segments.size(); ++i)
-            if (distance(getHead(), other.segments[i]) < radius * 2)
+            if (distance(getHead(), other.segments[i]) < getScaledRadius() + other.getScaledRadius())
                 return true;
         return false;
     }
@@ -115,12 +117,16 @@ public:
         return distance(getHead(), other.getHead()) < radius * 2;
     }
 
-    void grow() { growthLeft += 10; }
+    void grow() {
+        growthLeft += 10;
+        scaleRadius += 0.1f; // увеличиваем ширину
+    }
 
     void render(sf::RenderWindow& window, sf::Color color) {
         for (auto& pos : segments) {
-            sf::CircleShape circle(radius);
-            circle.setOrigin(radius, radius);
+            float scaled = radius * scaleRadius;
+            sf::CircleShape circle(scaled);
+            circle.setOrigin(scaled, scaled);
             circle.setPosition(pos);
             circle.setFillColor(color);
             window.draw(circle);
@@ -129,6 +135,10 @@ public:
 
     sf::Vector2f getHead() const { return segments.front(); }
     float getRadius() const { return radius; }
+
+    float getScaledRadius() const {
+        return radius * scaleRadius;
+    }
 };
 
 class BotWorm : public Worm {
@@ -143,26 +153,35 @@ public:
     void avoidObstacles(const std::vector<BotWorm>& bots, const Worm& player) {
         const float avoidDistance = 40.f;
         const float turnStrength = 2.0f;
-
         sf::Vector2f avoidanceVector{0.f, 0.f};
 
-        // Избегаем игрока (все сегменты)
-        for (size_t i = 0; i < player.segments.size(); ++i) {
-            float d = distance(getHead(), player.segments[i]);
-            if (d < avoidDistance && d > 0.01f) {
-                float weight = (avoidDistance - d) / avoidDistance;
-                avoidanceVector += normalize(getHead() - player.segments[i]) * weight / d;
+        float safeDist = getScaledRadius() + player.getScaledRadius() + 20.f;
+
+        // Избегаем игрока
+        {
+            for (const auto& pos : player.segments) {
+                float d = distance(getHead(), pos);
+                if (d < safeDist && d > 0.01f) {
+                    float weight = (safeDist - d) / safeDist;
+                    float power = (weight * weight) * 1.5f;
+                    avoidanceVector += normalize(getHead() - pos) * power;
+
+                    if (d < getScaledRadius() + 10.f) {
+                        avoidanceVector += normalize(getHead() - pos) * 5.f;
+                    }
+                }
             }
         }
 
-        // Избегаем других ботов (все сегменты)
+        // Избегаем других ботов
         for (const auto& bot : bots) {
             if (&bot == this) continue;
-            for (size_t i = 0; i < bot.segments.size(); ++i) {
-                float d = distance(getHead(), bot.segments[i]);
-                if (d < avoidDistance && d > 0.01f) {
-                    float weight = (avoidDistance - d) / avoidDistance;
-                    avoidanceVector += normalize(getHead() - bot.segments[i]) * weight / d;
+            float safeDist = getScaledRadius() + bot.getScaledRadius() + 20.f;
+            for (const auto& pos : bot.segments) {
+                float d = distance(getHead(), pos);
+                if (d < safeDist && d > 0.01f) {
+                    float weight = (safeDist - d) / safeDist;
+                    avoidanceVector += normalize(getHead() - pos) * weight / d;
                 }
             }
         }
@@ -172,6 +191,7 @@ public:
             direction = newDir;
         }
     }
+
 
     void update(float deltaTime, const sf::Vector2u& winSize, const std::vector<BotWorm>& bots, const Worm& player) {
         directionTimer += deltaTime;
@@ -231,7 +251,7 @@ public:
     }
 
     bool isEatenBy(const Worm& worm) {
-        return distance(worm.getHead(), position) < worm.getRadius() + size / 2;
+        return distance(worm.getHead(), position) < worm.getScaledRadius() + size / 2;
     }
 };
 
