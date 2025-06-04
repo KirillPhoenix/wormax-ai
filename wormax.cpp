@@ -50,12 +50,28 @@ public:
     float fastSpeed = 500.f;
     float currentSpeed = normalSpeed;
     float radius = GameConfig::wormRadius;
-    int growthLeft = 0;
     float scaleRadius = 1.f;
-
+    float maxScaleRadius = 2.5f;
+    int growthLeft = 0;
 
     sf::Vector2f direction = {1.f, 0.f};
     float maxTurnRate = 15.0f;
+
+    // Бонусы
+    bool isStopped = false;
+    bool isGhost = false;
+    sf::Clock stopTimer, ghostTimer;
+    float stopDuration = 2.f, ghostDuration = 2.f;
+
+    // Кулдауны
+    bool stopCooldown = false, ghostCooldown = false;
+    sf::Clock stopCooldownTimer, ghostCooldownTimer;
+    float stopCooldownTime = 10.f, ghostCooldownTime = 10.f;
+
+    // Буст
+    bool isBoosting = false;
+    sf::Clock boostDrainTimer;
+    float boostDrainInterval = 1.f;
 
     Worm(sf::Vector2f startPos, int length) {
         growthLeft += length;
@@ -63,13 +79,25 @@ public:
     }
 
     void setBoosting(bool boosting) {
-        currentSpeed = boosting ? fastSpeed : normalSpeed;
+        isBoosting = boosting;
+        currentSpeed = (boosting && canBoost()) ? fastSpeed : normalSpeed;
+    }
+
+    bool canBoost() const {
+        return segments.size() > 10;
+    }
+
+    bool canStop() const {
+        return segments.size() >= 100;
+    }
+
+    bool canGhost() const {
+        return segments.size() >= 500;
     }
 
     void updateDirection(sf::Vector2f target, float deltaTime) {
-        sf::Vector2f head = segments.front();
+        sf::Vector2f head = getHead();
         sf::Vector2f toTarget = normalize(target - head);
-
         float angle = angleBetween(direction, toTarget);
         float maxAngle = maxTurnRate * deltaTime;
 
@@ -80,7 +108,6 @@ public:
 
         float sign = cross(direction, toTarget) < 0 ? -1.f : 1.f;
         float rotateAngle = sign * maxAngle;
-
         float sinA = std::sin(rotateAngle);
         float cosA = std::cos(rotateAngle);
 
@@ -93,6 +120,9 @@ public:
     }
 
     void moveForward(float deltaTime) {
+        updateBonuses();
+        if (isStopped) return;
+
         sf::Vector2f head = segments.front();
         sf::Vector2f newHead = head + direction * currentSpeed * deltaTime;
 
@@ -103,43 +133,91 @@ public:
 
         segments.push_front(newHead);
         if (growthLeft > 0) --growthLeft;
-        else segments.pop_back();
-    }
+        else if (segments.size() > 10) segments.pop_back();
 
-    bool checkCollisionWith(const Worm& other) const {
-        for (size_t i = 1; i < other.segments.size(); ++i)
-            if (distance(getHead(), other.segments[i]) < getScaledRadius() + other.getScaledRadius())
-                return true;
-        return false;
-    }
+        // Буст теряет массу
+        if (isBoosting && canBoost() && boostDrainTimer.getElapsedTime().asSeconds() >= boostDrainInterval) {
+            boostDrainTimer.restart();
 
-    bool checkHeadOnCollision(const Worm& other) const {
-        return distance(getHead(), other.getHead()) < radius * 2;
+            if (growthLeft > 0) --growthLeft;
+            else if (segments.size() > 10) segments.pop_back();
+        }
     }
 
     void grow() {
         growthLeft += 10;
-        scaleRadius += 0.1f; // увеличиваем ширину
+        if (scaleRadius < maxScaleRadius)
+            scaleRadius += 0.05f;
     }
 
     void render(sf::RenderWindow& window, sf::Color color) {
+        float visualRadius = radius * scaleRadius;
+        sf::Color visualColor = color;
+        if (isGhost) visualColor.a = 100;
+
         for (auto& pos : segments) {
-            float scaled = radius * scaleRadius;
-            sf::CircleShape circle(scaled);
-            circle.setOrigin(scaled, scaled);
+            sf::CircleShape circle(visualRadius);
+            circle.setOrigin(visualRadius, visualRadius);
             circle.setPosition(pos);
-            circle.setFillColor(color);
+            circle.setFillColor(visualColor);
             window.draw(circle);
         }
     }
 
     sf::Vector2f getHead() const { return segments.front(); }
     float getRadius() const { return radius; }
+    float getScaledRadius() const { return radius * scaleRadius; }
 
-    float getScaledRadius() const {
-        return radius * scaleRadius;
+    bool checkCollisionWith(const Worm& other) const {
+        if (isGhost || other.isGhost) return false;
+        for (size_t i = 1; i < other.segments.size(); ++i) {
+            if (distance(getHead(), other.segments[i]) < getScaledRadius() + other.getScaledRadius())
+                return true;
+        }
+        return false;
+    }
+
+    bool checkHeadOnCollision(const Worm& other) const {
+        if (isGhost || other.isGhost) return false;
+        return distance(getHead(), other.getHead()) < getScaledRadius() + other.getScaledRadius();
+    }
+
+    void activateStop() {
+        if (stopCooldown || !canStop()) return;
+        isStopped = true;
+        stopTimer.restart();
+        stopCooldown = true;
+        stopCooldownTimer.restart();
+    }
+
+    void activateGhost() {
+        if (ghostCooldown || !canGhost()) return;
+        isGhost = true;
+        ghostTimer.restart();
+        ghostCooldown = true;
+        ghostCooldownTimer.restart();
+    }
+
+    void updateBonuses() {
+        if (isStopped && stopTimer.getElapsedTime().asSeconds() >= stopDuration)
+            isStopped = false;
+        if (isGhost && ghostTimer.getElapsedTime().asSeconds() >= ghostDuration)
+            isGhost = false;
+        if (stopCooldown && stopCooldownTimer.getElapsedTime().asSeconds() >= stopCooldownTime)
+            stopCooldown = false;
+        if (ghostCooldown && ghostCooldownTimer.getElapsedTime().asSeconds() >= ghostCooldownTime)
+            ghostCooldown = false;
+    }
+
+    float getStopCooldownRemaining() const {
+        return stopCooldown ? stopCooldownTime - stopCooldownTimer.getElapsedTime().asSeconds() : 0.f;
+    }
+
+    float getGhostCooldownRemaining() const {
+        return ghostCooldown ? ghostCooldownTime - ghostCooldownTimer.getElapsedTime().asSeconds() : 0.f;
     }
 };
+
 
 class BotWorm : public Worm {
 public:
@@ -233,6 +311,9 @@ public:
     sf::Vector2f position;
     float size = 10.f;
 
+    bool isPermanent = true; // по умолчанию — обычная еда
+    sf::Clock lifetime;
+
     Food() { respawn(); }
 
     void respawn() {
@@ -257,10 +338,12 @@ public:
 
 // ⬇️ Новая функция: создаёт еду из червяка
 void spawnFoodFromWorm(const Worm& worm, std::vector<Food>& foods) {
-    for (const auto& segment : worm.segments) {
+    for (const auto& pos : worm.segments) {
         Food f;
-        f.position = segment;
-        f.size = 6.f + static_cast<float>(rand() % 5); // от 6 до 10 пикселей
+        f.position = pos;
+        f.size = 6.f + static_cast<float>(rand() % 5);
+        f.isPermanent = false;               // временная еда
+        f.lifetime.restart();                // запускаем таймер
         foods.push_back(f);
     }
 }
@@ -344,6 +427,23 @@ int main() {
                 food.respawn();
             }
         }
+
+        foods.erase(std::remove_if(foods.begin(), foods.end(),
+            [](const Food& f) {
+                return !f.isPermanent && f.lifetime.getElapsedTime().asSeconds() > 10.f;
+            }),
+            foods.end());
+
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::Q))
+            player.setBoosting(true);
+        else
+            player.setBoosting(false);
+
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::W))
+            player.activateStop();
+
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::E))
+            player.activateGhost();
 
         view.setCenter(player.getHead());
         window.setView(view);
