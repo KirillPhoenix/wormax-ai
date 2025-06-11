@@ -7,9 +7,11 @@ import time
 import os
 import win32gui
 import mss
+import socket
+import struct
 
 class WormaxEnv(gym.Env):
-    def __init__(self, exe_path="C:/Users/Phoenix/Documents/GitHub/wormax-ai/wormax.exe"):
+    def __init__(self, exe_path="C:/Users/Phoenix/Documents/GitHub/wormax-ai/wormax.exe", env_id=0):
         super().__init__()
         self.action_space = gym.spaces.Box(
             low=np.array([-1.0, -1.0, 0.0, 0.0, 0.0], dtype=np.float32),
@@ -17,7 +19,7 @@ class WormaxEnv(gym.Env):
             dtype=np.float32
         )
         self.observation_space = gym.spaces.Box(
-            low=0, high=255, shape=(64, 64, 1), dtype=np.uint8
+            low=0, high=255, shape=(32, 32, 1), dtype=np.uint8
         )
         self.exe_path = exe_path
         self.process = None
@@ -28,12 +30,16 @@ class WormaxEnv(gym.Env):
         self.sct = mss.mss()
         self.last_img = None
         self.frame_count = 0
-        self.last_state = np.zeros((64, 64, 1), dtype=np.uint8)
-        print(f"✅ Initialized WormaxEnv with exe_path: {exe_path}")
+        self.last_state = np.zeros((32, 32, 1), dtype=np.uint8)
+        self.port = 12345 + env_id
+        self.reward_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.reward_sock.connect(("localhost", self.port))
+        print(f"✅ Initialized WormaxEnv with exe_path: {exe_path}, port: {self.port}")
 
     def _find_window(self):
         def callback(hwnd, hwnds):
-            if win32gui.GetWindowText(hwnd) == "Wormax Mini with Bots":
+            title = win32gui.GetWindowText(hwnd)
+            if title.startswith("Wormax Mini with Bots - " + str(self.port)):
                 hwnds.append(hwnd)
             return True
         hwnds = []
@@ -44,45 +50,24 @@ class WormaxEnv(gym.Env):
     def _get_screenshot(self):
         if not self.hwnd:
             print("Ошибка: Нет дескриптора окна")
-            return np.zeros((64, 64, 1), dtype=np.uint8)
+            return np.zeros((32, 32, 1), dtype=np.uint8)
         left, top, right, bottom = self.window_rect
         monitor = {"top": top + 50, "left": left + 50, "width": 200, "height": 200}
         if monitor["width"] <= 0 or monitor["height"] <= 0:
             print("Ошибка: Неверные размеры окна")
-            return np.zeros((64, 64, 1), dtype=np.uint8)
+            return np.zeros((32, 32, 1), dtype=np.uint8)
         img = np.array(self.sct.grab(monitor))[:, :, 0]
-        img = cv2.resize(img, (64, 64))
+        img = cv2.resize(img, (32, 32))
         if self.last_img is not None and np.array_equal(img, self.last_img):
             print("Повторный скриншот, использую кэш")
             return self.last_img[:, :, np.newaxis]
         self.last_img = img
-        cv2.imwrite("screenshot.png", img)
-        print("Скриншот сохранён в screenshot.png")
         return img[:, :, np.newaxis]
-
+    
     def _get_reward(self):
-        try:
-            if not os.path.exists("rewards.txt"):
-                print("rewards.txt не найден")
-                return 0.0, False
-            with open("rewards.txt", "r", encoding="utf-8") as f:
-                lines = f.readlines()
-            if not lines:
-                print("rewards.txt пуст")
-                return 0.0, False
-            for line in reversed(lines):
-                if line.startswith("Death: -100"):
-                    print("Обнаружена смерть: -100")
-                    return -100.0, True
-                if line.startswith("Total reward:"):
-                    reward = float(line.split(":")[1].strip())
-                    print(f"Награда: {reward}")
-                    return reward, False
-            print(f"Последняя строка: {lines[-1]}")
-            return 0.0, False
-        except Exception as e:
-            print(f"Ошибка чтения награды: {e}")
-            return 0.0, False
+        data = self.reward_sock.recv(4)
+        reward = struct.unpack('f', data)[0]
+        return reward
 
     def reset(self, seed=None):
         print("Сброс среды...")
@@ -92,12 +77,12 @@ class WormaxEnv(gym.Env):
                 self.process.wait(timeout=2)
                 print("Процесс завершён")
             if os.path.exists("rewards.txt"):
-                os.remove("rewards.txt")
+                os.remove("rewards.txt")    
                 print("Удалён rewards.txt")
             if not os.path.exists(self.exe_path):
                 raise FileNotFoundError(f"wormax.exe не найден по пути: {self.exe_path}")
-            print(f"Запускаю {self.exe_path}")
-            self.process = subprocess.Popen(self.exe_path)
+            print(f"Запускаю {self.exe_path} с портом {self.port}")
+            self.process = subprocess.Popen([self.exe_path, str(self.port)])
             time.sleep(2)
             self.hwnd = self._find_window()
             if self.hwnd:
@@ -118,7 +103,7 @@ class WormaxEnv(gym.Env):
         print(f"Действие: {action}")
         try:
             self.frame_count += 1
-            if self.frame_count % 3 != 0:
+            if self.frame_count % 5 != 0:
                 return self.last_state, 0.0, False, False, {}
             dx = action[0] * 100
             dy = action[1] * 100

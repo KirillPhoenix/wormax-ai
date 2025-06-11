@@ -1,12 +1,18 @@
 import gymnasium as gym
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.vec_env import SubprocVecEnv
 from wormax_env import WormaxEnv
-import time
 
 try:
     print("Запуск обучения PPO")
-    env = WormaxEnv(exe_path="C:/Users/Phoenix/Documents/GitHub/wormax-ai/wormax.exe")
+    env = make_vec_env(
+        WormaxEnv,
+        n_envs=4,
+        env_kwargs={"exe_path": "C:/Users/Phoenix/Documents/GitHub/wormax-ai/wormax.exe"},
+        vec_env_cls=SubprocVecEnv
+    )
     checkpoint_callback = CheckpointCallback(
         save_freq=10000,
         save_path="./wormax_checkpoints/",
@@ -23,19 +29,12 @@ try:
         batch_size=64,
         n_epochs=10,
     )
-    total_steps = 100000
-    steps_per_chunk = 10000
-    for i in range(total_steps // steps_per_chunk):
-        print(f"Чанк {i+1}/{total_steps//steps_per_chunk}")
-        model.learn(
-            total_timesteps=steps_per_chunk,
-            progress_bar=True,
-            callback=checkpoint_callback,
-            reset_num_timesteps=False
-        )
-        model.save(f"wormax_ppo_chunk_{i}")
-        print(f"Пауза 5 минут...")
-        time.sleep(300)
+    print("Обучение на 100000 шагов...")
+    model.learn(
+        total_timesteps=100000,
+        progress_bar=True,
+        callback=checkpoint_callback
+    )
     print("Сохранение финальной модели...")
     model.save("wormax_ppo_final")
     print("Модель сохранена в wormax_ppo_final.zip")
