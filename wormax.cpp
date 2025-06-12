@@ -63,18 +63,24 @@ float angleBetween(sf::Vector2f a, sf::Vector2f b) {
     return std::acos(dotVal);
 }
 
+int randomInRange(int a, int b) {
+    return a + rand() % (b - a + 1);
+}
+
 class Worm {
 public:
     std::deque<sf::Vector2f> segments;
     float segmentSpacing = 10.f;
-    float normalSpeed = 200.f;
-    float fastSpeed = 400.f;
+    float normalSpeed = 150.f;
+    float fastSpeed = 300.f;
     float currentSpeed = normalSpeed;
     float radius = GameConfig::wormRadius;
     float scaleRadius = 1.f;
     float maxScaleRadius = 2.5f;
     int growthLeft = 0;
     static constexpr size_t max_length = 300; // Ограничение длины
+    sf::Color color = sf::Color(rand() % 256, rand() % 256, rand() % 256);
+
 
     sf::Vector2f direction = {1.f, 0.f};
     float maxTurnRate = 15.0f;
@@ -96,6 +102,9 @@ public:
     float stopCooldownTime = 3.f;
     sf::Clock stopCooldownTimer;
     sf::Clock stopDurationTimer;
+
+    bool isBot = false;
+    std::string name = "";
 
 
     Worm(sf::Vector2f startPos, int length) {
@@ -218,7 +227,7 @@ public:
             scaleRadius += 0.01f;
     }
 
-    virtual void render(sf::RenderWindow& window, sf::Color color) {
+    virtual void render(sf::RenderWindow& window) {
         float visualRadius = radius * scaleRadius;
         sf::Color c = isGhost ? sf::Color(color.r, color.g, color.b, 100) : color;
 
@@ -229,6 +238,46 @@ public:
             circle.setFillColor(c);
             window.draw(circle);
         }
+
+        // Рисуем глаза (всем червям)
+        sf::Vector2f headPos = getHead();
+        float eyeRadius = getScaledRadius() * 0.25f;
+
+        // Смещаем глаза относительно направления
+        sf::Vector2f perp = {-direction.y, direction.x}; // вектор перпендикуляра
+        sf::Vector2f forward = normalize(direction) * getScaledRadius() * 0.6f;
+        sf::Vector2f leftEyePos = headPos + perp * 0.5f * getScaledRadius() + forward;
+        sf::Vector2f rightEyePos = headPos - perp * 0.5f * getScaledRadius() + forward;
+
+        sf::CircleShape leftEye(eyeRadius);
+        leftEye.setFillColor(sf::Color::White);
+        leftEye.setOrigin(eyeRadius, eyeRadius);
+        leftEye.setPosition(leftEyePos);
+        window.draw(leftEye);
+
+        sf::CircleShape rightEye(eyeRadius);
+        rightEye.setFillColor(sf::Color::White);
+        rightEye.setOrigin(eyeRadius, eyeRadius);
+        rightEye.setPosition(rightEyePos);
+        window.draw(rightEye);
+
+        // Имя (только ботам)
+        if (isBot && !name.empty()) {
+            static sf::Font font;
+            static bool fontLoaded = false;
+            if (!fontLoaded) {
+                font.loadFromFile("Arial-BoldItalicMT.ttf"); // или другой font рядом с .exe
+                fontLoaded = true;
+            }
+
+            sf::Text label(name, font, 8);
+            label.setFillColor(sf::Color::White);
+            label.setOutlineColor(sf::Color::Black);
+            label.setOutlineThickness(2);
+            label.setPosition(headPos.x - label.getGlobalBounds().width / 2, headPos.y - getScaledRadius() * 2.5f);
+            window.draw(label);
+        }
+
     }
 
     sf::Vector2f getHead() const { return segments.front(); }
@@ -257,6 +306,13 @@ public:
     sf::Color color = sf::Color(rand() % 256, rand() % 256, rand() % 256);
 
     BotWorm(sf::Vector2f startPos, int length) : Worm(startPos, length) {
+        isBot = true;
+
+        static const std::vector<std::string> randomNames = {
+            "Bot42", "SnakeX", "SlitherAI", "Wiggler", "NeoWorm", "Eater", "Curlz", "Zigzag", "Creeper", "NomNom"
+        };
+        name = randomNames[rand() % randomNames.size()];
+
         randomizeDirection();
     }
 
@@ -309,8 +365,8 @@ public:
         moveForward(deltaTime);
     }
 
-    void render(sf::RenderWindow& window, sf::Color ignore = sf::Color::Red) override {
-        Worm::render(window, color);
+    void render(sf::RenderWindow& window) override {
+        Worm::render(window);
     }
 
 private:
@@ -399,7 +455,7 @@ int main(int argc, char* argv[]) {
 
     sf::View view({0, 0, 400, 300});
     view.setCenter(GameConfig::arenaCenter);
-    view.zoom(0.5f);
+    view.zoom(0.6f);
     window.setView(view);
 
     std::vector<Food> foods(GameConfig::foodCount);
@@ -409,7 +465,7 @@ int main(int argc, char* argv[]) {
         float angle = static_cast<float>(rand()) / RAND_MAX * 2 * 3.14159f;
         float radius = std::sqrt(static_cast<float>(rand()) / RAND_MAX) * GameConfig::arenaRadius;
         sf::Vector2f pos = GameConfig::arenaCenter + sf::Vector2f(std::cos(angle), std::sin(angle)) * radius;
-        bots.emplace_back(pos, 20);
+        bots.emplace_back(pos, randomInRange(20,100));
     }
 
     sf::Clock clock;
@@ -556,7 +612,7 @@ int main(int argc, char* argv[]) {
 
         for (auto& food : foods) food.render(window);
         for (auto& bot : bots) bot.render(window);
-        player.render(window, sf::Color::Green);
+        player.render(window);
 
         window.setView(window.getDefaultView());
         scoreText.setString("Length: " + std::to_string(player.segments.size()));
