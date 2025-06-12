@@ -19,8 +19,9 @@ class WormaxEnv(gym.Env):
             dtype=np.float32
         )
         self.observation_space = gym.spaces.Box(
-            low=0, high=255, shape=(32, 32, 1), dtype=np.uint8
+            low=0, high=255, shape=(64, 64, 1), dtype=np.uint8
         )
+
         self.exe_path = exe_path
         self.process = None
         self.hwnd = None
@@ -30,11 +31,12 @@ class WormaxEnv(gym.Env):
         self.sct = mss.mss()
         self.last_img = None
         self.frame_count = 0
-        self.last_state = np.zeros((32, 32, 1), dtype=np.uint8)
+        self.last_state = np.zeros((64, 64, 1), dtype=np.uint8)
+        self.env_id = env_id
         self.port = 12345 + env_id
-        self.reward_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.reward_sock.connect(("localhost", self.port))
+        self.reward_sock = None  # ← создаётся в reset
         print(f"✅ Initialized WormaxEnv with exe_path: {exe_path}, port: {self.port}")
+
 
     def _find_window(self):
         def callback(hwnd, hwnds):
@@ -50,20 +52,25 @@ class WormaxEnv(gym.Env):
     def _get_screenshot(self):
         if not self.hwnd:
             print("Ошибка: Нет дескриптора окна")
-            return np.zeros((32, 32, 1), dtype=np.uint8)
+            return np.zeros((64, 64, 1), dtype=np.uint8)
+
         left, top, right, bottom = self.window_rect
         monitor = {"top": top + 50, "left": left + 50, "width": 200, "height": 200}
+
         if monitor["width"] <= 0 or monitor["height"] <= 0:
             print("Ошибка: Неверные размеры окна")
-            return np.zeros((32, 32, 1), dtype=np.uint8)
+            return np.zeros((64, 64, 1), dtype=np.uint8)
+
         img = np.array(self.sct.grab(monitor))[:, :, 0]
-        img = cv2.resize(img, (32, 32))
+        img = cv2.resize(img, (64, 64))
+
         if self.last_img is not None and np.array_equal(img, self.last_img):
             print("Повторный скриншот, использую кэш")
             return self.last_img[:, :, np.newaxis]
+
         self.last_img = img
         return img[:, :, np.newaxis]
-    
+
     def _get_reward(self):
         data = self.reward_sock.recv(4)
         reward = struct.unpack('f', data)[0]
@@ -76,25 +83,50 @@ class WormaxEnv(gym.Env):
                 self.process.terminate()
                 self.process.wait(timeout=2)
                 print("Процесс завершён")
+
             if os.path.exists("rewards.txt"):
                 os.remove("rewards.txt")    
                 print("Удалён rewards.txt")
+
             if not os.path.exists(self.exe_path):
                 raise FileNotFoundError(f"wormax.exe не найден по пути: {self.exe_path}")
+
             print(f"Запускаю {self.exe_path} с портом {self.port}")
             self.process = subprocess.Popen([self.exe_path, str(self.port)])
             time.sleep(2)
-            self.hwnd = self._find_window()
-            if self.hwnd:
-                self.window_rect = win32gui.GetClientRect(self.hwnd)
-                left, top, right, bottom = win32gui.GetWindowRect(self.hwnd)
-                self.window_rect = (left + 8, top + 31, right - 8, bottom - 8)
-                print(f"Окно найдено, rect: {self.window_rect}")
+
+            # Ждём окно
+            for attempt in range(10):
+                self.hwnd = self._find_window()
+                if self.hwnd:
+                    break
+                print(f"⏳ Окно не найдено, попытка {attempt + 1}")
+                time.sleep(0.5)
+
+            if not self.hwnd:
+                raise RuntimeError("Окно игры не найдено после 10 попыток")
+
+            # Получаем координаты окна
+            left, top, right, bottom = win32gui.GetWindowRect(self.hwnd)
+            self.window_rect = (left + 8, top + 31, right - 8, bottom - 8)
+            print(f"✅ Окно найдено: {self.window_rect}")
+
+            # Подключение к сокету
+            self.reward_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            for attempt in range(10):
+                try:
+                    self.reward_sock.connect(("localhost", self.port))
+                    break
+                except ConnectionRefusedError:
+                    print(f"Порт {self.port} пока не отвечает, попытка {attempt + 1}")
+                    time.sleep(0.5)
             else:
-                raise RuntimeError("Окно игры не найдено")
+                raise RuntimeError(f"Не удалось подключиться к порту {self.port}")
+
             self.last_img = None
             self.frame_count = 0
             return self._get_screenshot(), {}
+
         except Exception as e:
             print(f"Ошибка сброса: {e}")
             raise
@@ -126,9 +158,11 @@ class WormaxEnv(gym.Env):
                 pyautogui.press("e")
             time.sleep(0.001)
             state = self._get_screenshot()
-            reward, done = self._get_reward()
+            reward = self._get_reward()
+            done = False  # временно, пока ты сам не внедришь флаг конца эпизода
             truncated = False
             self.last_state = state
+            print("state shape:", state.shape)
             return state, reward, done, truncated, {}
         except Exception as e:
             print(f"Ошибка шага: {e}")
@@ -150,6 +184,9 @@ class WormaxEnv(gym.Env):
             if os.path.exists("rewards.txt"):
                 os.remove("rewards.txt")
                 print("Удалён rewards.txt")
+                
+            if self.reward_sock:
+                self.reward_sock.close()
         except Exception as e:
             print(f"Ошибка закрытия: {e}")
 
