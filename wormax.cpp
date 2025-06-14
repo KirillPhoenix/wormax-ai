@@ -48,18 +48,33 @@ void controlServer(int port) {
             std::size_t received = 0;
             if (controlSocket.receive(buffer, sizeof(buffer), received) == sf::Socket::Done && received == 11) {
                 float dx, dy;
-                bool b, s, g;
-                std::memcpy(&dx, buffer, 4);
-                std::memcpy(&dy, buffer + 4, 4);
-                b = buffer[8];
-                s = buffer[9];
-                g = buffer[10];
-                targetPos = sf::Vector2f(dx * 1000.f, dy * 1000.f);
-                boostKey = b;
-                stopKey = s;
-                ghostKey = g;
+                bool boost, stop, ghost;
+
+                // Ручное переворачивание байтов для big-endian
+                unsigned char dx_bytes[4], dy_bytes[4];
+                for (int i = 0; i < 4; i++) {
+                    dx_bytes[i] = buffer[3 - i];  // Переворачиваем байты dx
+                    dy_bytes[i] = buffer[7 - i];  // Переворачиваем байты dy
+                }
+                std::memcpy(&dx, dx_bytes, 4);
+                std::memcpy(&dy, dy_bytes, 4);
+
+                boost = buffer[8] != 0;
+                stop = buffer[9] != 0;
+                ghost = buffer[10] != 0;
+
+                targetPos = sf::Vector2f(dx * 500.f, dy * 500.f);  // Увеличим масштаб до 500
+             
+                boostKey = boost;
+                stopKey = stop;
+                ghostKey = ghost;
                 std::cout << "✅ Received: dx=" << dx << ", dy=" << dy
-                        << ", boost=" << b << ", stop=" << s << ", ghost=" << g << std::endl;
+                        << ", boost=" << boost << ", stop=" << stop << ", ghost=" << ghost
+                        << ", targetPos=(" << targetPos.x << ", " << targetPos.y << ")" << std::endl;   
+            } else if (received == 0) {
+                std::cerr << "Connection closed by client on port " << port + 1 << std::endl;
+            } else {
+                std::cerr << "Partial data received: " << received << " bytes on port " << port + 1 << std::endl;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
@@ -680,15 +695,14 @@ int main(int argc, char* argv[]) {
         // Управление: сокет или мышь/клавиатура
         if (useSocketControl) {
             sf::Vector2f rawTargetDir = targetPos - player.getHead();
-
+            std::cout << "Raw target dir: (" << rawTargetDir.x << ", " << rawTargetDir.y << "), length=" << length(rawTargetDir) << std::endl;
             if (length(rawTargetDir) < 0.1f) {
-                rawTargetDir = player.direction;  // ← защита от нуля
+                rawTargetDir = player.direction;
+                std::cout << "Using current direction due to small length" << std::endl;
             }
-
             smoothedTargetDir = rawTargetDir;
-
-            sf::Vector2f target = player.getHead() + normalize(smoothedTargetDir) * 100.f;
-
+            sf::Vector2f target = player.getHead() + normalize(smoothedTargetDir) * 500.f;  // Увеличим расстояние до цели
+            std::cout << "Final target: (" << target.x << ", " << target.y << ")" << std::endl;
             player.updateDirection(target, deltaTime);
             player.setBoosting(boostKey);
             player.setStopped(stopKey);
