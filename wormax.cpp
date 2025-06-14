@@ -8,16 +8,72 @@
 #include <unordered_set>
 #include <ctime>
 #include <fstream>
+#include <cstring>
 
 // Global variable for tracking the last step's reward
 float g_last_step_reward = 0.0f;
 sf::TcpListener rewardListener;
 sf::TcpSocket rewardSocket;
 std::thread rewardThread;
+sf::Vector2f smoothedTargetDir = {0.f, 0.f}; // Сглаженный target
+
+// Добавить глобальные переменные для второго сокета
+sf::TcpListener controlListener;
+sf::TcpSocket controlSocket;
+std::thread controlThread;
+sf::Vector2f targetPos; // Целевая позиция для направления
+bool boostKey = false, stopKey = false, ghostKey = false; // Состояния клавиш
+bool useSocketControl = false; // Флаг для переключения на сокет
+
+// Сервер для приёма команд
+void controlServer(int port) {
+    while (true) {
+        std::cout << "Restarting control listener on port " << port + 1 << "..." << std::endl;
+        if (controlListener.listen(port + 1) != sf::Socket::Done) {
+            std::cerr << "Failed to listen on port " << port + 1 << ", error: " << controlListener.Error << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            continue;
+        }
+        std::cout << "Listening on port " << port + 1 << " succeeded" << std::endl;
+        std::cout << "Waiting for client connection on port " << port + 1 << "..." << std::endl;
+        if (controlListener.accept(controlSocket) != sf::Socket::Done) {
+            std::cerr << "Failed to accept control connection on port " << port + 1 << ", error: " << controlSocket.Error << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            continue;
+        }
+        useSocketControl = true;
+        std::cout << "Control server started on port " << port + 1 << std::endl;
+        while (true) {
+            char buffer[11];
+            std::size_t received = 0;
+            if (controlSocket.receive(buffer, sizeof(buffer), received) == sf::Socket::Done && received == 11) {
+                float dx, dy;
+                bool b, s, g;
+                std::memcpy(&dx, buffer, 4);
+                std::memcpy(&dy, buffer + 4, 4);
+                b = buffer[8];
+                s = buffer[9];
+                g = buffer[10];
+                targetPos = sf::Vector2f(dx * 1000.f, dy * 1000.f);
+                boostKey = b;
+                stopKey = s;
+                ghostKey = g;
+                std::cout << "✅ Received: dx=" << dx << ", dy=" << dy
+                        << ", boost=" << b << ", stop=" << s << ", ghost=" << g << std::endl;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+}
 
 // Runs a server to send rewards to a client over TCP at 30 FPS
-void rewardServer() {
-    rewardListener.listen(12345); // Listen on port 12345
+void rewardServer(int port) {
+    rewardListener.listen(port); // ← теперь порт передаётся
+    if (rewardListener.accept(rewardSocket) != sf::Socket::Done) {
+        std::cerr << "Failed to accept reward connection on port " << port << std::endl;
+        return;
+    }
+
     rewardListener.accept(rewardSocket); // Accept client connection
     while (true) {
         sf::Packet packet;
@@ -33,7 +89,7 @@ struct Settings {
     float arenaRadius = 1000.f; // Radius of the game arena
     sf::Vector2f arenaCenter = {arenaRadius, arenaRadius}; // Center of the arena
     sf::Color arenaFillColor = sf::Color(30, 30, 30); // Arena background color
-    sf::Color arenaOutlineColor = sf::Color(100, 100, 100); // Arena border color
+    sf::Color arenaOutlineColor = sf::Color(220, 10, 10); // Arena border color
     float arenaOutlineThickness = 10.f; // Thickness of arena border
 
     // Worm settings
@@ -66,7 +122,7 @@ struct Settings {
     int botMaxLength = 100; // Maximum initial bot length
 
     // Food settings
-    int foodCount = 40; // Number of food items
+    int foodCount = 60; // Number of food items
     float foodSize = 8.f; // Size of food items
     float foodMaxLifeTime = 5.f; // Maximum lifetime of food
     float foodDropSizeMin = 6.f; // Minimum size of food dropped from worms
@@ -592,35 +648,68 @@ int main(int argc, char* argv[]) {
         sf::Vector2f pos = settings.arenaCenter + sf::Vector2f(std::cos(angle), std::sin(angle)) * radius;
         bots.emplace_back(pos, randomInRange(settings.botMinLength, settings.botMaxLength), settings);
     }
+    
     sf::Clock clock;
     bool debugToggle = false; // Debug mode toggle
-    std::ofstream rewardLog("rewards.txt"); // Log file for rewards
-    std::thread rewardThread(rewardServer);
+    
+    //std::ofstream //rewardLog("rewards.txt"); // Log file for rewards
+    std::thread rewardThread(rewardServer, port);
     rewardThread.detach(); // Run reward server in background
+    
+    // Запуск сервера управления
+    controlThread = std::thread(controlServer, port);
+    controlThread.detach();
+
     // Main game loop
     while (window.isOpen()) {
         // Handle events
         sf::Event event;
         while (window.pollEvent(event)) {
-            if (event.type == sf::Event::Closed) window.close();
+            if (event.type == sf::Event::Closed || 
+                (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Escape)) {
+                window.close(); // Закрытие по Esc или крестику
+            }
+            
             if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::F1) {
                 debugToggle = !debugToggle;
             }
         }
         // Cap delta time to prevent large jumps
         float deltaTime = std::min(clock.restart().asSeconds(), 1.f / 30.f);
-        // Handle player input
-        player.setBoosting(sf::Keyboard::isKeyPressed(sf::Keyboard::Q));
-        player.setStopped(sf::Keyboard::isKeyPressed(sf::Keyboard::W));
-        if (sf::Keyboard::isKeyPressed(sf::Keyboard::E) && !player.isGhost && !player.isGhostCooldown && player.canGhost()) {
-            player.activateGhost();
+
+        // Управление: сокет или мышь/клавиатура
+        if (useSocketControl) {
+            sf::Vector2f rawTargetDir = targetPos - player.getHead();
+
+            if (length(rawTargetDir) < 0.1f) {
+                rawTargetDir = player.direction;  // ← защита от нуля
+            }
+
+            smoothedTargetDir = rawTargetDir;
+
+            sf::Vector2f target = player.getHead() + normalize(smoothedTargetDir) * 100.f;
+
+            player.updateDirection(target, deltaTime);
+            player.setBoosting(boostKey);
+            player.setStopped(stopKey);
+            if (ghostKey && !player.isGhost && !player.isGhostCooldown && player.canGhost()) {
+                player.activateGhost();
+            }
+        } else {
+            player.setBoosting(sf::Keyboard::isKeyPressed(sf::Keyboard::Q));
+            player.setStopped(sf::Keyboard::isKeyPressed(sf::Keyboard::W));
+            if (sf::Keyboard::isKeyPressed(sf::Keyboard::E) && !player.isGhost && !player.isGhostCooldown && player.canGhost()) {
+                player.activateGhost();
+            }
+            player.updateDirection(window.mapPixelToCoords(sf::Mouse::getPosition(window), view), deltaTime);
         }
+
         // Update ability indicators
         boost_circle.setFillColor(player.canBoost() ? settings.activeColor : settings.inactiveColor);
         stop_circle.setFillColor((player.canStop() && !player.stopCooldown) ? settings.activeColor : settings.inactiveColor);
         ghost_circle.setFillColor((player.canGhost() && !player.isGhostCooldown && !player.isGhost) ? settings.activeColor : settings.inactiveColor);
         // Update player movement
-        player.updateDirection(window.mapPixelToCoords(sf::Mouse::getPosition(window), view), deltaTime);
+        //player.updateDirection(window.mapPixelToCoords(sf::Mouse::getPosition(window), view), deltaTime); првторный вызов, выше уже используется
         player.moveForward(deltaTime);
         // Collect all worms for collision checks
         std::vector<Worm*> allWorms = {&player};
@@ -654,14 +743,14 @@ int main(int argc, char* argv[]) {
                 sf::Vector2f pos = settings.arenaCenter + sf::Vector2f(std::cos(angle), std::sin(angle)) * radius;
                 player.reset(pos, settings.initialWormLength);
                 reward -= settings.deathPenalty;
-                rewardLog << "Death: -" << settings.deathPenalty << "\n";
+                //rewardLog << "Death: -" << settings.deathPenalty << "\n";
             } else {
                 float angle = static_cast<float>(rand()) / RAND_MAX * 2 * 3.14159f;
                 float radius = std::sqrt(static_cast<float>(rand()) / RAND_MAX) * settings.arenaRadius;
                 sf::Vector2f pos = settings.arenaCenter + sf::Vector2f(std::cos(angle), std::sin(angle)) * radius;
                 newBots.emplace_back(pos, randomInRange(settings.botMinLength, settings.botMaxLength), settings);
                 reward += settings.botKillReward;
-                rewardLog << "Bot killed: +" << settings.botKillReward << "\n";
+                //rewardLog << "Bot killed: +" << settings.botKillReward << "\n";
                 if (debugToggle) {
                     std::cout << "Bot respawned at (" << pos.x << ", " << pos.y << ")\n";
                 }
@@ -690,13 +779,13 @@ int main(int argc, char* argv[]) {
                 player.grow();
                 food.respawn();  // оставим respawn обычной еды
                 reward += settings.foodReward;
-                rewardLog << "Food: +" << settings.foodReward << "\n";
+                //rewardLog << "Food: +" << settings.foodReward << "\n";
             }
         }
         // Apply radius penalty
         if (player.getScaledRadius() > settings.wormRadius) {
             reward -= settings.radiusPenalty;
-            rewardLog << "Radius penalty: -" << settings.radiusPenalty << "\n";
+            //rewardLog << "Radius penalty: -" << settings.radiusPenalty << "\n";
         }
         // Reward for food proximity
         float minFoodDist = std::numeric_limits<float>::max();
@@ -705,7 +794,7 @@ int main(int argc, char* argv[]) {
             if (d < minFoodDist) minFoodDist = d;
         }
         reward += settings.foodProximityRewardFactor * (1.f - minFoodDist / settings.arenaRadius);
-        rewardLog << "Food proximity: +" << settings.foodProximityRewardFactor * (1.f - minFoodDist / settings.arenaRadius) << "\n";
+        //rewardLog << "Food proximity: +" << settings.foodProximityRewardFactor * (1.f - minFoodDist / settings.arenaRadius) << "\n";
         // Penalty for bot proximity
         float minBotDist = std::numeric_limits<float>::max();
         for (const auto& bot : bots) {
@@ -714,11 +803,18 @@ int main(int argc, char* argv[]) {
         }
         if (minBotDist < settings.botProximityPenaltyDistance) {
             reward -= settings.botProximityPenalty;
-            rewardLog << "Bot proximity: -" << settings.botProximityPenalty << "\n";
+            //rewardLog << "Bot proximity: -" << settings.botProximityPenalty << "\n";
         }
         // Log and set reward
-        rewardLog << "Survival: +" << settings.survivalReward << "\n";
-        rewardLog << "Total reward: " << reward << "\n" << std::flush;
+        //rewardLog << "Survival: +" << settings.survivalReward << "\n";
+        //rewardLog << "Total reward: " << reward << "\n" << std::flush;
+
+        static float prevMinFoodDist = minFoodDist; // Используем уже вычисленный minFoodDist
+        float distReward = (prevMinFoodDist - minFoodDist) * 0.1f; // +0.1 за пиксель ближе
+        reward += distReward;
+        prevMinFoodDist = minFoodDist;
+        //rewardLog << "Dist reward: " << distReward << "\n";
+
         g_last_step_reward = reward;
         // Debug output
         if (debugToggle) {
@@ -752,6 +848,6 @@ int main(int argc, char* argv[]) {
         // Display frame
         window.display();
     }
-    rewardLog.close();
+    //rewardLog.close();
     return 0;
 }
