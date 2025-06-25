@@ -36,7 +36,7 @@ def main():
                 )
             return _init
 
-        env = SubprocVecEnv([make_env(i) for i in range(2)])
+        env = SubprocVecEnv([make_env(i) for i in range(8)])
 
         model = PPO(
             "CnnPolicy",

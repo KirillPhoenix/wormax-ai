@@ -10,16 +10,16 @@ import socket
 import struct
 
 class WormaxEnv(gym.Env):
-    def __init__(self, exe_path="C:/Users/Phoenix/Documents/GitHub/wormax-ai/wormax.exe", env_id=0, frame_skip=2):
+    def __init__(self, exe_path="C:/Users/Phoenix/Documents/GitHub/wormax-ai/wormax.exe", env_id=0, frame_skip=1):
         super().__init__()
         self.frame_skip = frame_skip
         self.action_space = gym.spaces.Box(
-            low=np.array([-1.0, -1.0, 0.0, 0.0, 0.0], dtype=np.float32),
-            high=np.array([1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32),
+            low=np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32),   # angle_norm, boost, stop, ghost
+            high=np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32),
             dtype=np.float32
         )
         self.observation_space = gym.spaces.Box(
-            low=0, high=255, shape=(84, 84, 3), dtype=np.uint8  # 84x84x3
+            low=0, high=255, shape=(84, 84, 3), dtype=np.uint8
         )
         self.exe_path = exe_path
         self.process = None
@@ -131,30 +131,46 @@ class WormaxEnv(gym.Env):
         try:
             self.frame_count += 1
             if self.frame_skip > 1 and self.frame_count % self.frame_skip != 0:
+                print("Скипаю")
                 return self.last_state, 0.0, False, False, {}
-            dx = action[0]
-            dy = action[1]
-            boost = action[2] > 0.5
-            stop = action[3] > 0.5
-            ghost = action[4] > 0.5
-            # Отправка через сокет
+
+            # --- Новый способ: angle → dx/dy ---
+            angle_norm = float(action[0])  # от 0.0 до 1.0
+            angle_degrees = angle_norm * 359.0
+            angle_radians = angle_degrees * np.pi / 180.0
+            dx = float(np.cos(angle_radians))
+            dy = float(np.sin(angle_radians))
+
+            boost = action[1] > 0.5
+            stop = action[2] > 0.5
+            ghost = action[3] > 0.5
+
+            # Отправка в сокет
             packet = struct.pack("ff???", dx, dy, boost, stop, ghost)
-            print(f"Sending to {self.control_port}: dx={dx}, dy={dy}, boost={boost}, stop={stop}, ghost={ghost}")
+            print(f"Sending to {self.control_port}: angle={angle_degrees:.1f}° → dx={dx:.3f}, dy={dy:.3f}, boost={boost}, stop={stop}, ghost={ghost}")
             try:
                 self.control_sock.send(packet)
+                print("Пакет отправлен")
             except Exception as e:
                 print(f"Ошибка отправки: {e}")
                 return np.zeros((84, 84, 3), dtype=np.uint8), 0.0, True, False, {}
+
+            print("Делаю скрин")
             state = self._get_screenshot()
+            print("Получаю награды")
             reward = self._get_reward()
-            done = reward < -1.0
+            print("Получил награду ", reward)
+            done = reward < -10.0
             truncated = False
             self.last_state = state
             print("state shape:", state.shape)
+            if done:
+                print("Эпизод завершён по флагу: done", reward)
             return state, reward, done, truncated, {}
         except Exception as e:
             print(f"Ошибка шага: {e}")
             return np.zeros((84, 84, 3), dtype=np.uint8), 0.0, True, False, {}
+
 
     def close(self):
         print("Закрытие среды")
@@ -180,7 +196,8 @@ if __name__ == "__main__":
         env = WormaxEnv()
         obs, _ = env.reset()
         for i in range(1000):
-            action = np.array([0.1, 0.1, 0.0, 0.0, 0.0], dtype=np.float32)
+            angle_norm = (i % 360) / 359.0
+            action = np.array([angle_norm, 0.0, 0.0, 0.0], dtype=np.float32)
             obs, reward, done, truncated, _ = env.step(action)
             print(f"Шаг {i}, Награда: {reward}, Done: {done}")
             if done or truncated:

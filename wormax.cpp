@@ -16,6 +16,8 @@ sf::TcpListener rewardListener;
 sf::TcpSocket rewardSocket;
 std::thread rewardThread;
 sf::Vector2f smoothedTargetDir = {0.f, 0.f}; // Сглаженный target
+sf::Vector2f targetDirection = {1.f, 0.f};   // Добавь эту строку
+
 
 // Добавить глобальные переменные для второго сокета
 sf::TcpListener controlListener;
@@ -24,6 +26,9 @@ std::thread controlThread;
 sf::Vector2f targetPos; // Целевая позиция для направления
 bool boostKey = false, stopKey = false, ghostKey = false; // Состояния клавиш
 bool useSocketControl = false; // Флаг для переключения на сокет
+
+
+bool g_last_step_done = false;
 
 // Сервер для приёма команд
 void controlServer(int port) {
@@ -51,19 +56,22 @@ void controlServer(int port) {
                 bool boost, stop, ghost;
 
                 // Ручное переворачивание байтов для big-endian
-                unsigned char dx_bytes[4], dy_bytes[4];
-                for (int i = 0; i < 4; i++) {
-                    dx_bytes[i] = buffer[3 - i];  // Переворачиваем байты dx
-                    dy_bytes[i] = buffer[7 - i];  // Переворачиваем байты dy
-                }
-                std::memcpy(&dx, dx_bytes, 4);
-                std::memcpy(&dy, dy_bytes, 4);
+                // unsigned char dx_bytes[4], dy_bytes[4];
+                // for (int i = 0; i < 4; i++) {
+                //     dx_bytes[i] = buffer[3 - i];  // Переворачиваем байты dx
+                //     dy_bytes[i] = buffer[7 - i];  // Переворачиваем байты dy
+                // }
+                // std::memcpy(&dx, dx_bytes, 4);
+                // std::memcpy(&dy, dy_bytes, 4);
+
+                std::memcpy(&dx, buffer, 4);
+                std::memcpy(&dy, buffer + 4, 4);
 
                 boost = buffer[8] != 0;
                 stop = buffer[9] != 0;
                 ghost = buffer[10] != 0;
 
-                targetPos = sf::Vector2f(dx * 500.f, dy * 500.f);  // Увеличим масштаб до 500
+                targetDirection = sf::Vector2f(dx, dy); // direction, not position
              
                 boostKey = boost;
                 stopKey = stop;
@@ -89,13 +97,13 @@ void rewardServer(int port) {
         return;
     }
 
-    rewardListener.accept(rewardSocket); // Accept client connection
     while (true) {
         sf::Packet packet;
-        packet << g_last_step_reward; // Send the latest reward
+        packet.append(&g_last_step_reward, sizeof(float));
         rewardSocket.send(packet);
         std::this_thread::sleep_for(std::chrono::milliseconds(30)); // 30 FPS
     }
+
 }
 
 // Consolidated game settings for easy configuration
@@ -121,8 +129,8 @@ struct Settings {
     float boostDrainInterval = 1.f; // Interval for boost resource drain
     float stopCooldownTime = 3.f; // Cooldown time for stop ability
     int minBoostLength = 10; // Minimum length to use boost
-    int minStopLength = 100; // Minimum length to use stop
-    int minGhostLength = 200; // Minimum length to use ghost
+    int minStopLength = 10; // Minimum length to use stop
+    int minGhostLength = 10; // Minimum length to use ghost
     float eyeRadiusScale = 0.25f; // Eye size relative to worm radius
     float eyeOffsetScale = 0.5f; // Eye position offset from head
     float eyeForwardOffset = 0.6f; // Forward offset for eyes
@@ -162,13 +170,13 @@ struct Settings {
     // Game mechanics
     float maxStepDistance = wormSegmentSpacing * 2.f; // Maximum movement step
     float foodProximityRewardFactor = 0.1f; // Reward factor for food proximity
-    float radiusPenalty = 0.05f; // Penalty for large radius
+    float radiusPenalty = 0.1f;           // ← если используется
     float botProximityPenaltyDistance = 50.f; // Distance for bot proximity penalty
-    float botProximityPenalty = 0.1f; // Penalty for being near bots
-    float survivalReward = 0.01f; // Reward for surviving each frame
-    float foodReward = 10.f; // Reward for eating food
-    float botKillReward = 50.f; // Reward for killing a bot
-    float deathPenalty = 100.f; // Penalty for player death
+    float botProximityPenalty = 0.2f;     // ← можно оставить или чуть усилить
+    float survivalReward = 0.05f;         // ← поддержка за кадр жизни
+    float foodReward = 0.5f;              // ← приемлемый буст
+    float botKillReward = 1.0f;           // ← максимум
+    float deathPenalty = 1.0f;            // ← abs штраф при смерти
 };
 
 // Utility function to calculate distance between two points
@@ -184,8 +192,10 @@ float length(sf::Vector2f v) {
 // Utility function to normalize a vector
 sf::Vector2f normalize(sf::Vector2f v) {
     float len = length(v);
-    return len == 0 ? sf::Vector2f(0, 0) : v / len;
+    if (len < 1e-5f) return sf::Vector2f(1.f, 0.f); // или текущая direction
+    return v / len;
 }
+
 
 // Utility function to compute dot product
 float dot(sf::Vector2f a, sf::Vector2f b) {
@@ -694,16 +704,10 @@ int main(int argc, char* argv[]) {
 
         // Управление: сокет или мышь/клавиатура
         if (useSocketControl) {
-            sf::Vector2f rawTargetDir = targetPos - player.getHead();
-            std::cout << "Raw target dir: (" << rawTargetDir.x << ", " << rawTargetDir.y << "), length=" << length(rawTargetDir) << std::endl;
-            if (length(rawTargetDir) < 0.1f) {
-                rawTargetDir = player.direction;
-                std::cout << "Using current direction due to small length" << std::endl;
-            }
-            smoothedTargetDir = rawTargetDir;
-            sf::Vector2f target = player.getHead() + normalize(smoothedTargetDir) * 500.f;  // Увеличим расстояние до цели
-            std::cout << "Final target: (" << target.x << ", " << target.y << ")" << std::endl;
+            sf::Vector2f dir = length(targetDirection) < 0.1f ? player.direction : normalize(targetDirection);
+            sf::Vector2f target = player.getHead() + dir * 500.f;
             player.updateDirection(target, deltaTime);
+
             player.setBoosting(boostKey);
             player.setStopped(stopKey);
             if (ghostKey && !player.isGhost && !player.isGhostCooldown && player.canGhost()) {
@@ -828,6 +832,11 @@ int main(int argc, char* argv[]) {
         reward += distReward;
         prevMinFoodDist = minFoodDist;
         //rewardLog << "Dist reward: " << distReward << "\n";
+
+        g_last_step_done = false;
+        if (deadWorms.count(&player)) {
+            g_last_step_done = true;
+        }
 
         g_last_step_reward = reward;
         // Debug output
