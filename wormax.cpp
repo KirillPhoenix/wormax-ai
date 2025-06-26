@@ -91,19 +91,22 @@ void controlServer(int port) {
 
 // Runs a server to send rewards to a client over TCP at 30 FPS
 void rewardServer(int port) {
-    rewardListener.listen(port); // ← теперь порт передаётся
+    rewardListener.listen(port);
     if (rewardListener.accept(rewardSocket) != sf::Socket::Done) {
         std::cerr << "Failed to accept reward connection on port " << port << std::endl;
         return;
     }
 
     while (true) {
+        std::cout << "Sending reward: " << g_last_step_reward << std::endl; // Отладка
         sf::Packet packet;
-        packet.append(&g_last_step_reward, sizeof(float));
-        rewardSocket.send(packet);
+        packet << g_last_step_reward; // Используем оператор << для корректной сериализации
+        std::size_t sent = 0;
+        if (rewardSocket.send(packet) != sf::Socket::Done) {
+            std::cerr << "Failed to send reward on port " << port << std::endl;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(30)); // 30 FPS
     }
-
 }
 
 // Consolidated game settings for easy configuration

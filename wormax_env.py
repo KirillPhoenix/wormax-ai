@@ -160,12 +160,10 @@ class WormaxEnv(gym.Env):
             print("Получаю награды")
             reward = self._get_reward()
             print("Получил награду ", reward)
-            done = reward < -10.0
+            done = reward < -1.0
             truncated = False
             self.last_state = state
             print("state shape:", state.shape)
-            if done:
-                print("Эпизод завершён по флагу: done", reward)
             return state, reward, done, truncated, {}
         except Exception as e:
             print(f"Ошибка шага: {e}")

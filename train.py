@@ -4,17 +4,38 @@ from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from wormax_env import WormaxEnv
+import os
+import datetime
 
 class RewardLoggerCallback(BaseCallback):
-    def __init__(self, verbose=0):
+    def __init__(self, log_path="training_log.txt", verbose=0):
         super().__init__(verbose)
+        self.log_path = log_path
+        self.episode_count = 0
+
+    def _on_training_start(self) -> None:
+        with open(self.log_path, "w") as f:
+            f.write(f"Training started at {datetime.datetime.now()}\n\n")
 
     def _on_step(self) -> bool:
         if 'infos' in self.locals:
             for info in self.locals['infos']:
                 if isinstance(info, dict) and 'episode' in info:
-                    print(f"🏆 Reward: {info['episode']['r']}")
+                    r = info['episode']['r']
+                    l = info['episode']['l']
+                    self.episode_count += 1
+                    with open(self.log_path, "a") as f:
+                        f.write(f"Episode {self.episode_count}: reward = {r}, length = {l}\n")
         return True
+
+    def _on_rollout_end(self) -> None:
+        # Записываем метрики после каждой итерации PPO
+        logs = self.model.logger.name_to_value
+        with open(self.log_path, "a") as f:
+            f.write("\nRollout Summary:\n")
+            for k, v in logs.items():
+                f.write(f"{k}: {v}\n")
+            f.write("\n")
 
 def make_wormax_env(rank, exe_path, frame_skip):
     def _init():
@@ -25,33 +46,28 @@ def main():
     try:
         print("Запуск обучения PPO")
 
-        from stable_baselines3.common.vec_env import SubprocVecEnv
-
-        def make_env(rank):
-            def _init():
-                return WormaxEnv(
-                    env_id=rank,
-                    exe_path="C:/Users/Phoenix/Documents/GitHub/wormax-ai/wormax.exe",
-                    frame_skip=2
-                )
-            return _init
-
-        env = SubprocVecEnv([make_env(i) for i in range(8)])
+        env = SubprocVecEnv([make_wormax_env(i, "C:/Users/Phoenix/Documents/GitHub/wormax-ai/wormax.exe", frame_skip=2) for i in range(8)])
 
         model = PPO(
             "CnnPolicy",
             env,
             verbose=1,
             tensorboard_log="./wormax_tensorboard/",
-            learning_rate=0.0003,
+            learning_rate=2.5e-4,
             n_steps=2048,
-            batch_size=64,
-            n_epochs=10,
+            batch_size=1024,
+            n_epochs=4,
+            gamma=0.99,
+            gae_lambda=0.95,
+            clip_range=0.2,
+            ent_coef=0.01,
+            vf_coef=0.5,
         )
 
-        print("Обучение на 100000 шагов...")
+        print("Обучение на 500000 шагов...")
         model.learn(
-            total_timesteps=100000,
+            total_timesteps=500000,
+            callback=RewardLoggerCallback(log_path="training_log.txt"),
             progress_bar=True
         )
 
@@ -70,7 +86,7 @@ def main():
         print("Закрытие среды...")
         if 'env' in locals():
             env.close()
-            
+
 if __name__ == "__main__":
     from multiprocessing import freeze_support
     freeze_support()
