@@ -1,0 +1,57 @@
+Training started at 2025-07-16 14:50:40.232294
+
+
+Rollout Summary:
+
+
+Rollout Summary:
+train/learning_rate: 0.0003
+train/entropy_loss: -1.0967476814985275
+train/policy_gradient_loss: -0.0030197930929716675
+train/value_loss: 1.0014259252697228
+train/approx_kl: 0.0037987581454217434
+train/clip_fraction: 0.0042236328125
+train/loss: 0.2984909415245056
+train/explained_variance: 0.12264209985733032
+train/n_updates: 20
+train/clip_range: 0.2
+
+
+Rollout Summary:
+train/learning_rate: 0.0003
+train/entropy_loss: -1.0858098812401296
+train/policy_gradient_loss: -0.010735016483522486
+train/value_loss: 0.1557127857580781
+train/approx_kl: 0.01024043932557106
+train/clip_fraction: 0.12392578125
+train/loss: 0.02281922847032547
+train/explained_variance: 0.34835588932037354
+train/n_updates: 40
+train/clip_range: 0.2
+
+
+Rollout Summary:
+train/learning_rate: 0.0003
+train/entropy_loss: -1.0754199765622616
+train/policy_gradient_loss: -0.010051889569149352
+train/value_loss: 0.3834780640900135
+train/approx_kl: 0.009307991713285446
+train/clip_fraction: 0.0654052734375
+train/loss: 0.175353541970253
+train/explained_variance: 0.2708841562271118
+train/n_updates: 60
+train/clip_range: 0.2
+
+
+Rollout Summary:
+train/learning_rate: 0.0003
+train/entropy_loss: -1.064908080548048
+train/policy_gradient_loss: -0.0101920894390787
+train/value_loss: 0.24670647606253623
+train/approx_kl: 0.00843731313943863
+train/clip_fraction: 0.081689453125
+train/loss: 0.09306743741035461
+train/explained_variance: 0.42026352882385254
+train/n_updates: 80
+train/clip_range: 0.2
+
