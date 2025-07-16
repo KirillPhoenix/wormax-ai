@@ -27,7 +27,7 @@ class WormaxEnvSimple(gym.Env):
         self.dt = 1.0
 
         self.action_space = gym.spaces.Discrete(3)  # LEFT, STRAIGHT, RIGHT
-        self.observation_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(5,), dtype=np.float32)
+        self.observation_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(6,), dtype=np.float32)
 
         self.reset()
 
@@ -95,13 +95,16 @@ class WormaxEnvSimple(gym.Env):
             dist = 1
         dir_to_food = vec / dist
         dist_norm = np.clip(dist / self.radius, 0.0, 1.0)
-        obs = np.concatenate([dir_to_food, [dist_norm], self.direction])
+        dist_to_wall = (self.radius - np.linalg.norm(self.head - self.center)) / self.radius
+        obs = np.concatenate([dir_to_food, [dist_norm], self.direction, [dist_to_wall]])
         return obs.astype(np.float32)
 
     def _rand_pos(self):
         angle = random.uniform(0, 2 * math.pi)
-        r = self.radius * math.sqrt(random.random())
+        # Ограничим спавн едой на 90% радиуса
+        r = self.radius * math.sqrt(random.uniform(0, 0.81))  # (0.9)^2 = 0.81
         return self.center + r * np.array([math.cos(angle), math.sin(angle)])
+
 
     def _rand_unit(self):
         a = random.uniform(0, 2 * math.pi)
@@ -122,7 +125,7 @@ class WormaxEnvSimple(gym.Env):
 
         # Еда
         for f in self.food:
-            cv2.circle(full, (int(f[0]), int(f[1])), self.food_radius, (0, 5, 250), -1)
+            cv2.circle(full, (int(f[0]), int(f[1])), self.food_radius, (250, 5, ), -1)
 
         # Червь
         for s in self.segments:
